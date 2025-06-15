@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+import os
 import sqlalchemy as db
 import os
 from sqlalchemy.orm import sessionmaker, Session
