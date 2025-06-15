@@ -24,47 +24,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 SECRET_KEY = "1234a"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+
 class User(Base):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True, index=True)
-    username = db.Column(db.String, unique=True, index=True)
-    hashed_password = db.Column(db.String)
+    username = db.Column(db.String(255), unique=True, index=True)
+    hashed_password = db.Column(db.String(255))
+
 
 class Task(Base):
     __tablename__ = "tasks"
     id = db.Column(db.Integer, primary_key=True, index=True)
-    title = db.Column(db.String, index=True)
-    description = db.Column(db.String)
-    status = db.Column(db.String, default="в ожидании")
+    title = db.Column(db.String(255), index=True)
+    description = db.Column(db.String(1000))
+    status = db.Column(db.String(100), default="в ожидании")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     priority = db.Column(db.Integer, default=1)
     owner_id = db.Column(db.Integer, db.ForeignKey("users.id"))
 
+
 class UserBase(BaseModel):
     username: str
 
+    class Config:
+        from_attributes = True
+
+
 class UserCreate(UserBase):
     password: str
+
 
 class UserInDB(UserBase):
     id: int
     hashed_password: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class TokenData(BaseModel):
     username: Optional[str] = None
+
 
 class TaskBase(BaseModel):
     title: str
@@ -72,8 +84,10 @@ class TaskBase(BaseModel):
     status: str
     priority: int
 
+
 class TaskCreate(TaskBase):
     pass
+
 
 class TaskUpdate(BaseModel):
     title: Optional[str]
@@ -81,13 +95,15 @@ class TaskUpdate(BaseModel):
     status: Optional[str]
     priority: Optional[int]
 
+
 class TaskInDB(TaskBase):
     id: int
     created_at: datetime
     owner_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
 
 # Database functions
 def get_db():
@@ -97,17 +113,22 @@ def get_db():
     finally:
         db.close()
 
+
 def create_tables():
     Base.metadata.create_all(bind=engine)
+
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
+
 def get_password_hash(password):
     return pwd_context.hash(password)
 
+
 def get_user(db: Session, username: str):
     return db.query(User).filter(User.username == username).first()
+
 
 def authenticate_user(db: Session, username: str, password: str):
     user = get_user(db, username)
@@ -117,15 +138,13 @@ def authenticate_user(db: Session, username: str, password: str):
         return False
     return user
 
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -146,9 +165,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
+
 @app.on_event("startup")
 def startup_event():
     create_tables()
+
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -165,6 +186,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
+
 @app.post("/users/", response_model=UserBase)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db_user = get_user(db, username=user.username)
@@ -176,6 +198,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
     return db_user
+
 
 @app.post("/tasks/", response_model=TaskInDB)
 def create_task(
@@ -189,8 +212,9 @@ def create_task(
     db.refresh(db_task)
     return db_task
 
+
 @app.get("/tasks/", response_model=List[TaskInDB])
-@lru_cache(maxsize=100)  # Кэширование GET-запросов, так как они часто повторяются
+@lru_cache(maxsize=100)
 def read_tasks(
     skip: int = 0,
     limit: int = 100,
@@ -201,31 +225,20 @@ def read_tasks(
     db: Session = Depends(get_db)
 ):
     query = db.query(Task).filter(Task.owner_id == current_user.id)
-    
+
     if search:
         query = query.filter(
             (Task.title.contains(search)) | (Task.description.contains(search))
         )
-    
+
     if sort_by:
-        if sort_by == "title":
-            field = Task.title
-        elif sort_by == "status":
-            field = Task.status
-        elif sort_by == "created_at":
-            field = Task.created_at
-        elif sort_by == "priority":
-            field = Task.priority
-        else:
-            field = Task.created_at
-        
+        field = getattr(Task, sort_by, Task.created_at)
         if order == "desc":
             field = field.desc()
-        
         query = query.order_by(field)
-    
-    tasks = query.offset(skip).limit(limit).all()
-    return tasks
+
+    return query.offset(skip).limit(limit).all()
+
 
 @app.get("/tasks/top/{n}", response_model=List[TaskInDB])
 def read_top_tasks(
@@ -233,8 +246,8 @@ def read_top_tasks(
     current_user: UserInDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    tasks = db.query(Task).filter(Task.owner_id == current_user.id).order_by(Task.priority.desc()).limit(n).all()
-    return tasks
+    return db.query(Task).filter(Task.owner_id == current_user.id).order_by(Task.priority.desc()).limit(n).all()
+
 
 @app.get("/tasks/{task_id}", response_model=TaskInDB)
 def read_task(
@@ -243,9 +256,10 @@ def read_task(
     db: Session = Depends(get_db)
 ):
     task = db.query(Task).filter(Task.id == task_id, Task.owner_id == current_user.id).first()
-    if task is None:
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
 
 @app.put("/tasks/{task_id}", response_model=TaskInDB)
 def update_task(
@@ -255,17 +269,16 @@ def update_task(
     db: Session = Depends(get_db)
 ):
     db_task = db.query(Task).filter(Task.id == task_id, Task.owner_id == current_user.id).first()
-    if db_task is None:
+    if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
-    update_data = task.dict(exclude_unset=True)
-    for key, value in update_data.items():
+
+    for key, value in task.dict(exclude_unset=True).items():
         setattr(db_task, key, value)
-    
-    db.add(db_task)
+
     db.commit()
     db.refresh(db_task)
     return db_task
+
 
 @app.delete("/tasks/{task_id}", response_model=TaskInDB)
 def delete_task(
@@ -274,7 +287,7 @@ def delete_task(
     db: Session = Depends(get_db)
 ):
     task = db.query(Task).filter(Task.id == task_id, Task.owner_id == current_user.id).first()
-    if task is None:
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     db.delete(task)
     db.commit()
